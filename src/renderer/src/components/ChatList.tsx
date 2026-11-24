@@ -1,3 +1,4 @@
+import { searchFold } from '../state/searchFold'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { underSource } from '../state/voiceList'
 import { includedInAll, profileGroups, readClosedSections, readGroupByProfile, readLeftOut, shownInAll, writeClosedSections, writeGroupByProfile, writeLeftOut } from '../state/profileGroups'
@@ -182,12 +183,12 @@ const isOther = (row: ChatRow): row is OtherChatRow => typeof (row as Partial<Ot
 const searchHttp = (path: string) => gateway.http('GET', path)
 const prefsHttp = (method: 'GET' | 'PUT', path: string, body?: unknown) => gateway.http(method, path, body)
 
-/** A row's words for the search, lowercased once per row object (rows keep theirs across refreshes: keepSameRows). */
+/** A row's words for the search, folded once per row object (rows keep theirs across refreshes: keepSameRows). */
 const searchTexts = new WeakMap<ChatRow, string>()
 function searchText(row: ChatRow): string {
   let text = searchTexts.get(row)
   if (text === undefined) {
-    text = `${row.title} ${row.preview ?? ''}`.toLowerCase()
+    text = searchFold(`${row.title} ${row.preview ?? ''}`)
     searchTexts.set(row, text)
   }
   return text
@@ -371,7 +372,7 @@ export function ChatList({
   // Only grouped by profile does the open chat change what's listed (its section keeps it past the cap), so a click elsewhere doesn't list again.
   const groupOpenId = grouped ? selectedId : null
   const { sections, listed, allowed, pinnedSection, nesting, hidesEverything } = useMemo(() => {
-    const q = query.trim().toLowerCase()
+    const q = searchFold(query.trim())
     const inProfile = otherProfile
       ? []
       : profile
@@ -390,9 +391,9 @@ export function ChatList({
     // Another combined host's chats, only in All with no filter: found by title or by the host's name. Another
     // dashboard's face shows only its profile's, and none of this dashboard's.
     const others = otherProfile
-      ? otherRows.filter(r => r.host === otherProfile.host && sameProfile(r, otherProfile.name) && (!q || `${r.title} ${r.preview ?? ''}`.toLowerCase().includes(q)))
+      ? otherRows.filter(r => r.host === otherProfile.host && sameProfile(r, otherProfile.name) && (!q || searchFold(`${r.title} ${r.preview ?? ''}`).includes(q)))
       : !profile && !active.length
-        ? otherRows.filter(r => !q || `${r.title} ${r.preview ?? ''} ${badgeFor?.(r.host)?.name ?? ''}`.toLowerCase().includes(q))
+        ? otherRows.filter(r => !q || searchFold(`${r.title} ${r.preview ?? ''} ${badgeFor?.(r.host)?.name ?? ''}`).includes(q))
         : []
     const sections = sectionRows(grouped ? filtered : [...filtered, ...others])
     // The Pinned section in the person's order, arranged from every pinned chat the profile shown has.
@@ -861,6 +862,11 @@ export function ChatList({
                       <span className="row-top">
                         <span className="row-title">
                           {badge ? <HostBadgeMark badge={badge} /> : null}
+                          {windowIds?.includes(row.id) ? (
+                            <span role="img" aria-label={t('Open in its own window')} title={t('Open in its own window')}>
+                              <Icon name="window" className="row-pin row-windowed" />
+                            </span>
+                          ) : null}
                           {row.title}
                         </span>
                         <span className="meta row-time">{timeLabel(row.activeAt, today)}</span>
@@ -892,6 +898,7 @@ export function ChatList({
                   starred={!!marks && isStarred(marks, row)}
                   done={!!isDone?.(row)}
                   muted={!!muteOf?.(row)}
+                  windowed={!!windowIds?.includes(row.id)}
                   botName={botName(row)}
                   draggable={canReorder && row.pinned && !renaming}
                   dragging={dragging === row.id}
@@ -1232,6 +1239,7 @@ const ChatRowItem = memo(function ChatRowItem({
   starred,
   done,
   muted,
+  windowed,
   botName,
   draggable,
   dragging,
@@ -1253,6 +1261,8 @@ const ChatRowItem = memo(function ChatRowItem({
   starred: boolean
   done: boolean
   muted: boolean
+  /** The chat is open in a window of its own (desktop#479): its row says so, and a click brings that window forward. */
+  windowed: boolean
   botName: string | null
   draggable: boolean
   dragging: boolean
@@ -1304,6 +1314,11 @@ const ChatRowItem = memo(function ChatRowItem({
               {muted ? (
                 <span role="img" aria-label={t('Notifications muted')}>
                   <Icon name="bellSlash" className="row-pin" />
+                </span>
+              ) : null}
+              {windowed ? (
+                <span role="img" aria-label={t('Open in its own window')} title={t('Open in its own window')}>
+                  <Icon name="window" className="row-pin row-windowed" />
                 </span>
               ) : null}
               {row.title}

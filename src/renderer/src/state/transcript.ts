@@ -729,6 +729,42 @@ export function prependOlder(state: TranscriptState, items: TranscriptItem[]): T
   return { ...state, items: [...state.items.slice(0, at), ...fresh, ...state.items.slice(at)] }
 }
 
+/**
+ * The rows `kept` draws above the first one `state` draws too: the pages a
+ * reader scrolled up through, when the chat is read again on its newest
+ * page. Nothing when the two share no row, since rows between them would
+ * be missing.
+ */
+export function olderPagesOf(kept: TranscriptState, state: TranscriptState): TranscriptItem[] {
+  const drawn = new Set(state.items.map(item => item.key))
+  const at = kept.items.findIndex(item => item.key !== 'long-chat' && drawn.has(item.key))
+  return at <= 0 ? [] : kept.items.slice(0, at).filter(item => item.key !== 'long-chat')
+}
+
+/**
+ * A running turn's reply so far, less what the chat's rows already draw. A
+ * resume's `inflight.assistant` is everything the turn has streamed, and a
+ * turn working through tools has stored its earlier parts as rows of their
+ * own, so drawing it whole says them twice (seen on a reconnect mid-turn,
+ * desktop#485's hand check). Rows that don't lead the text leave it whole.
+ */
+export function inflightRemainder(state: TranscriptState, text: string): string {
+  let last = -1
+  state.items.forEach((item, i) => {
+    if (item.kind === 'user') last = i
+  })
+  let rest = text
+  for (const item of state.items.slice(last + 1)) {
+    if (item.kind !== 'assistant') continue
+    const said = item.text.trim()
+    const ahead = rest.trimStart()
+    if (!said) continue
+    if (!ahead.startsWith(said)) break
+    rest = ahead.slice(said.length)
+  }
+  return rest.trimStart()
+}
+
 function confirmPending(items: TranscriptItem[]): TranscriptItem[] {
   if (!items.some(item => item.kind === 'user' && item.pending)) return items
   return items.map(item => (item.kind === 'user' && item.pending ? { ...item, pending: false } : item))

@@ -1052,6 +1052,14 @@ function macMenu(): Menu {
     showWindow()
     sendCommand(action)
   }
+  // The chat's text size goes to the window in front when that is a chat's own window, which sets it for
+  // every window; raising the main window over it would take the reader away from the chat (desktop#449).
+  const textSize = (action: MenuAction) => () => {
+    const front = BrowserWindow.getFocusedWindow()
+    // Only a chat's window listens for it: Quick Ask and a Bot's Screen leave it to the main window.
+    if (front && chatBrowserWindows.has(front) && !front.isDestroyed()) front.webContents.send(IPC.menu, action)
+    else command(action)()
+  }
   const go = currentRailSections.slice(0, 6).map((section, i) => ({
     label: railSectionLabel(section),
     accelerator: `Cmd+${i + 1}`,
@@ -1087,9 +1095,9 @@ function macMenu(): Menu {
     {
       label: t('View'),
       submenu: [
-        { label: t('Make Text Bigger'), accelerator: 'Cmd+Plus', click: command('text-bigger') },
-        { label: t('Make Text Smaller'), accelerator: 'Cmd+-', click: command('text-smaller') },
-        { label: t('Make Text Normal Size'), accelerator: 'Cmd+0', click: command('text-normal') },
+        { label: t('Make Text Bigger'), accelerator: 'Cmd+Plus', click: textSize('text-bigger') },
+        { label: t('Make Text Smaller'), accelerator: 'Cmd+-', click: textSize('text-smaller') },
+        { label: t('Make Text Normal Size'), accelerator: 'Cmd+0', click: textSize('text-normal') },
         { type: 'separator' },
         { label: t('Show or Hide Sidebar'), accelerator: 'Cmd+\\', click: command('toggle-sidebar') },
         { type: 'separator' },
