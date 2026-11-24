@@ -302,8 +302,15 @@ function WindowChat({ request, status }: { request: ChatWindowRequest; status: C
   const screenOpen = screenWindows.includes(screenKey(host || undefined, screenProfile))
   /** Another chat on the chat's dashboard: the main window docks it (or shows it, on the dashboard on screen). */
   const openOther = useCallback(
-    (sessionId: string, title?: string, other?: { botChat?: boolean; profile?: string }) =>
-      window.conduit.openChat({ storedId: sessionId, profile: other?.profile ?? profile, title, ...(other?.botChat ? { botChat: true } : {}), ...(host ? { host } : {}) }),
+    (sessionId: string, title?: string, other?: { botChat?: boolean; profile?: string; workstream?: boolean }) =>
+      window.conduit.openChat({
+        storedId: sessionId,
+        profile: other?.profile ?? profile,
+        title,
+        ...(other?.botChat ? { botChat: true } : {}),
+        ...(other?.workstream ? { workstream: true } : {}),
+        ...(host ? { host } : {})
+      }),
     [profile, host]
   )
   // A reply's links to its work and to other chats: a card or a link opens the chat, as in the main window.
@@ -317,7 +324,8 @@ function WindowChat({ request, status }: { request: ChatWindowRequest; status: C
     return {
       open: (sessionId, linkProfile) => {
         const item = ofSession(sessionId)
-        openOther(sessionId, item ? shownTitle(item) : undefined, { profile: linkProfile ?? profile })
+        // A workstream says so: the main window's own read of every bot's work can trail one just started.
+        openOther(sessionId, item ? shownTitle(item) : undefined, { profile: linkProfile ?? profile, workstream: item?.kind === 'workstream' })
       },
       item: workstream,
       missing: readResolvedWork,
@@ -505,7 +513,7 @@ function WindowChat({ request, status }: { request: ChatWindowRequest; status: C
             )
           }
         />
-        <AskedQuestionBar rows={askedHere} onChanged={() => void waiting.refresh()} />
+        <AskedQuestionBar rows={askedHere} onChanged={() => void waiting.refresh()} liveId={chat.liveId} />
         <FileLinks.Provider value={openPath}>
           <WorkLinks.Provider value={workLinkActions}>
             <ConnectionActionsContext.Provider value={connectionActions}>
@@ -657,7 +665,8 @@ function WindowChat({ request, status }: { request: ChatWindowRequest; status: C
           error={work.error}
           onReload={() => void work.reload()}
           onAnswered={() => void waiting.refresh()}
-          onOpenChat={item => openOther(item.sessionId, shownTitle(item))}
+          openChat={{ storedId: chat.storedId, liveId: chat.liveId, botChat }}
+          onOpenChat={item => openOther(item.sessionId, shownTitle(item), { workstream: item.kind === 'workstream' })}
           onClose={() => openTab(null)}
           tabs={panelTabBar}
         />

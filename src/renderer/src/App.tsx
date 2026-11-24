@@ -175,6 +175,7 @@ import { useChatCall } from './components/ChatCall'
 import { screenKey } from '@shared/screenWindows'
 import { useWork, useWorkSessions } from './state/useWork'
 import { shownTitle, type WorkItem } from './state/work'
+import { landsWithBots } from './state/workLinks'
 import { HermesCallSettings } from './components/HermesCallSettings'
 import { WakePhraseSettings } from './components/WakePhraseSettings'
 import { IncomingCall } from './components/IncomingCall'
@@ -183,7 +184,7 @@ import { VoiceModeSettings } from './components/VoiceModeSettings'
 import { readAloud, readsRepliesAloud, setReadsRepliesAloud } from './state/readAloud'
 import { READ_ALOUD_SPEEDS, readAloudSpeed, setReadAloudSpeed, speedLabel } from './state/classicVoice'
 import { useCommands } from './state/useCommands'
-import { authorityMutation, moveChat, mutateSession, sessionIsBusy } from './state/chatActions'
+import { authorityMutation, busyOnGateway, moveChat, mutateSession } from './state/chatActions'
 import { branchPlan } from './state/branch'
 import { ROOM_CHATS_CAPABILITY, wrapUpPrompt, type RoomChatAgent } from './state/roomChats'
 import { openRoomChatHere } from './state/roomChatOpen'
@@ -537,7 +538,9 @@ function Shell({
         return
       }
       // A workstream's chat opened from a chat window's card lives with its bot: the bots sidebar shows beside it.
-      if (workSessionsRef.current.has(ref.storedId)) setBotsSide(true)
+      // The window read it from the bot's own work and says so, since the cross-bot read here can trail a
+      // workstream just started (#428).
+      if (landsWithBots(ref, workSessionsRef.current)) setBotsSide(true)
       setSelected({ id: ref.storedId, profile: ref.profile, title: ref.title, ...(ref.botChat ? { botChat: true } : {}) })
       setSection('chats')
     })
@@ -1624,10 +1627,10 @@ function Shell({
       if (archived !== false) {
         // The background registry covers at most eight profiles in All; ask
         // this row's own profile before making an irreversible state change.
-        const profile = row.profile && row.profile !== 'default' ? { profile: row.profile } : undefined
-        const active = await gateway.rpc('session.active_list', profile)
+        // A Hermes without that read leaves it to the busy signs checked above.
+        const busy = await busyOnGateway(gateway.rpc, row.id, row.profile)
         if (!archiveHostMounted.current || statusUrlRef.current !== host) return false
-        if (sessionIsBusy(active, row.id)) {
+        if (busy) {
           void tell(t('Hermes is still busy in this chat. Try again in a moment.'))
           return false
         }
@@ -2522,7 +2525,7 @@ function Shell({
                 }
               />
               {/* A question the bot asked here that waits past its turn. */}
-              <AskedQuestionBar rows={askedHere} onChanged={() => void waiting.refresh()} />
+              <AskedQuestionBar rows={askedHere} onChanged={() => void waiting.refresh()} liveId={chat.liveId} />
               <FileLinks.Provider value={openPath}>
                 <WorkLinks.Provider value={workLinkActions}>
                   <ConnectionActionsContext.Provider value={connectionActions}>
@@ -2696,6 +2699,7 @@ function Shell({
                 error={work.error}
                 onReload={() => void work.reload()}
                 onAnswered={() => void waiting.refresh()}
+                openChat={{ storedId: selected.id, liveId: chat.liveId, botChat: selected.botChat === true || !!openBotChat }}
                 onOpenChat={item => {
                   // The panel is the bot tab's list of its work: its rows keep the bots beside the chat they open.
                   setBotsSide(true)
