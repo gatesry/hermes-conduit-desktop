@@ -1,5 +1,5 @@
 import { answerKeeper, keptAnswer } from '../state/keptAnswers'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { t } from '@shared/i18n'
 import { gateway } from '../gateway'
 import { startRestart } from '../state/hostActions'
@@ -20,6 +20,7 @@ import {
   type InstalledPlugin
 } from '../state/plugins'
 import { scoped } from '../state/capabilities'
+import { useSlowWait } from '../state/slowWait'
 import { settingsRow } from '../state/pluginSettings'
 import { PluginSettingsForm } from './PluginSettingsForm'
 import { ask, tell } from '../state/dialogs'
@@ -66,35 +67,58 @@ export function PluginsTab({ profile, query, host }: { profile: string; query: s
   // Hermes' own plugin list, for each plugin's settings form; none on a Hermes without it.
   const [manage, setManage] = useState<unknown>(null)
   const canManage = profile === 'default'
+  // The hub route takes ten seconds or more on a host with a large library, and a bare
+  // "Loading…" for that long reads as a frozen tab (desktop#444).
+  const slow = useSlowWait(!installed && !error)
+
+  const generation = useRef(0)
 
   const load = useCallback(async () => {
+    // Another profile's answer landing late is dropped, not drawn under this one.
+    const mine = ++generation.current
+    const current = () => generation.current === mine
     setError(null)
     const keepHub = answerKeeper(scoped(HUB_PATH, profile))
     // The catalog is the same for every profile: kept once per dashboard.
     const keepCatalog = answerKeeper(CATALOG_PATH)
-    const [hub, list, rows] = await Promise.allSettled([
-      gateway.http('GET', scoped(HUB_PATH, profile)),
-      gateway.http('GET', CATALOG_PATH, undefined, 30_000),
-      gateway.rpc('plugins.manage', { action: 'list', profile })
-    ])
-    setManage(rows.status === 'fulfilled' ? rows.value : null)
-    if (hub.status === 'fulfilled') {
-      try {
-        setInstalled(parseInstalled(hub.value))
-        keepHub(hub.value)
-      } catch {
-        setError(t("Couldn't load agent plugins"))
+    // Each answer is drawn the moment it lands: the installed list comes from the hub and
+    // must not wait on the catalog, which is the slower of the two on a large host
+    // (desktop#444).
+    const hubRead = gateway.http('GET', scoped(HUB_PATH, profile)).then(
+      value => {
+        if (!current()) return
+        try {
+          setInstalled(parseInstalled(value))
+          keepHub(value)
+        } catch {
+          setError(t("Couldn't load agent plugins"))
+        }
+      },
+      reason => {
+        if (current()) setError(`${t("Couldn't load agent plugins")} ${message(reason)}`)
       }
-    } else setError(`${t("Couldn't load agent plugins")} ${message(hub.reason)}`)
-    if (list.status === 'fulfilled') {
-      try {
-        setCatalog(parseCatalog(list.value))
-        setCatalogFailed(false)
-        keepCatalog(list.value)
-      } catch {
-        setCatalogFailed(true)
+    )
+    const catalogRead = gateway.http('GET', CATALOG_PATH, undefined, 30_000).then(
+      value => {
+        try {
+          setCatalog(parseCatalog(value))
+          setCatalogFailed(false)
+          keepCatalog(value)
+        } catch {
+          setCatalogFailed(true)
+        }
+      },
+      () => setCatalogFailed(true)
+    )
+    const manageRead = gateway.rpc('plugins.manage', { action: 'list', profile }).then(
+      value => {
+        if (current()) setManage(value)
+      },
+      () => {
+        if (current()) setManage(null)
       }
-    } else setCatalogFailed(true)
+    )
+    await Promise.allSettled([hubRead, catalogRead, manageRead])
   }, [profile])
 
   useEffect(() => {
@@ -160,7 +184,8 @@ export function PluginsTab({ profile, query, host }: { profile: string; query: s
     })
   }
 
-  if (!installed && !error) return <p className="meta">{t('Loading…')}</p>
+  if (!installed && !error)
+    return <p className="meta">{slow ? t('This is taking longer than usual.') : t('Loading…')}</p>
   const shown = filterInstalled(installed ?? [], query)
   const available = filterCatalog(catalog ?? [], query)
   return (
@@ -261,6 +286,7 @@ export function PluginsTab({ profile, query, host }: { profile: string; query: s
         <h2>{t('Plugin catalog')}</h2>
         <p className="meta">{t("Reviewed plugins from Hermes' catalog.")}</p>
         {catalogFailed && !catalog ? <p className="meta">{t("Couldn't load the catalog.")}</p> : null}
+        {!catalog && !catalogFailed ? <p className="meta">{t('Loading…')}</p> : null}
         {catalog && !available.length ? <p className="meta">{t('No matching plugins')}</p> : null}
         {available.map(entry => {
           const expanded = open === `c:${entry.name}`
