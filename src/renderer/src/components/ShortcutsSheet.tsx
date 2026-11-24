@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { acceleratorLabel } from '@shared/accelerator'
 import { t } from '@shared/i18n'
 import { shortcutGroups, type GoTo } from '../state/shortcuts'
 import { inSelectMenu } from './Select'
@@ -18,7 +19,15 @@ export function ShortcutsSheet({ sections, onClose }: { sections?: readonly GoTo
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
   }, [onClose])
-  const groups = shortcutGroups(window.conduit.platform === 'darwin', sections)
+  const [quickAsk, setQuickAsk] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    void window.conduit.quickAskShortcut().then(({ accelerator, registered }) => live && setQuickAsk(accelerator && registered ? acceleratorLabel(accelerator, window.conduit.platform) : null))
+    return () => {
+      live = false
+    }
+  }, [])
+  const groups = shortcutGroups(window.conduit.platform === 'darwin', sections, quickAsk)
   return (
     <div className="shortcuts-backdrop" onClick={onClose}>
       <div className="shortcuts-sheet" role="dialog" aria-modal="true" aria-label={t('Keyboard Shortcuts')} onClick={e => e.stopPropagation()}>

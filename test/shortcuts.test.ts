@@ -71,6 +71,11 @@ describe('glyphs and groups', () => {
     expect(shortcutForSection('tasks', ['chats', 'tasks', 'needs'], true)).toBe('⌘2')
     expect(shortcutForSection('pulse', ['chats', 'tasks', 'needs'], true)).toBeNull()
   })
+
+  it('lists Quick Ask with its keys, and leaves it out without any', () => {
+    expect(shortcutGroups(true, undefined, '⌥Space')[0].rows.at(-1)?.keys).toEqual(['⌥Space'])
+    expect(shortcutGroups(true)[0].rows).toHaveLength(5)
+  })
 })
 
 describe('nextScale', () => {

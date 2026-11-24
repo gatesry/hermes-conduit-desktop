@@ -46,7 +46,8 @@ import { hostFileName, hostFilePath, dataUrlBytes, streamToFile, isDashboardPage
 import { Connection, DISPLAY_SOCKET_PATH } from './connection'
 import { Pairing } from './pairing'
 import { createFileStore } from './store'
-import { QUICK_ASK_ACCELERATOR, QuickAsk } from './quickAsk'
+import { QuickAsk } from './quickAsk'
+import { validAccelerator } from '../shared/accelerator'
 import { ChatWindowSet, chatWindowFor } from './chatWindowSet'
 import { createChatWindow } from './chatWindows'
 import { dockedFrameHost } from '../shared/chatWindows'
@@ -61,6 +62,8 @@ import {
   askHostAtLaunch,
   chooseAppIcon,
   chooseAskHost,
+  chooseQuickAskAccelerator,
+  quickAskAccelerator,
   chooseLanguage,
   chooseLock,
   chooseTheme,
@@ -599,7 +602,42 @@ function registerIpc(): void {
     if (typeof text === 'string') clipboard.writeText(text)
   })
   ipcMain.on(IPC.quickAskExpanded, (_event, expanded: unknown) => quickAsk.setExpanded(typeof expanded === 'number' ? expanded : expanded === true))
-  ipcMain.handle(IPC.quickAskShortcut, () => ({ accelerator: QUICK_ASK_ACCELERATOR, registered: quickAsk.registered }))
+  const quickAskShortcut = () => ({ accelerator: quickAsk.accelerator, registered: quickAsk.registered })
+  ipcMain.handle(IPC.quickAskShortcut, quickAskShortcut)
+  ipcMain.handle(IPC.setQuickAskShortcut, (_event, accelerator: unknown) => {
+    const next = accelerator === null ? null : validAccelerator(accelerator) ? accelerator : undefined
+    const changed = next !== undefined && quickAsk.change(next)
+    if (changed) chooseQuickAskAccelerator(next)
+    // Also after a refusal: taking the keys before back may have just worked where it hadn't at launch.
+    tray.setQuickAsk(quickAsk.registered ? quickAsk.accelerator : null)
+    return { ...quickAskShortcut(), changed }
+  })
+  // Settings is listening for new keys: the Mac's menu bar would take ⌘N and the rest first, and the keys held now would open Quick Ask.
+  let recordingIn: Electron.WebContents | null = null
+  const endRecording = () => {
+    if (!recordingIn) return
+    if (!recordingIn.isDestroyed()) {
+      recordingIn.off('destroyed', endRecording)
+      recordingIn.off('did-navigate', endRecording)
+    }
+    recordingIn = null
+    if (isMac) Menu.setApplicationMenu(macMenu())
+    quickAsk.resume()
+    tray.setQuickAsk(quickAsk.registered ? quickAsk.accelerator : null)
+  }
+  ipcMain.on(IPC.quickAskRecording, (event, on: unknown) => {
+    if (on !== true) {
+      if (recordingIn === event.sender) endRecording()
+      return
+    }
+    endRecording()
+    recordingIn = event.sender
+    // A window closed or reloaded mid-pick gives the menu and the keys back.
+    recordingIn.once('destroyed', endRecording)
+    recordingIn.once('did-navigate', endRecording)
+    if (isMac) Menu.setApplicationMenu(null)
+    quickAsk.suspend()
+  })
   ipcMain.handle(IPC.answerRequest, (event, id: string, result: Record<string, unknown>) => connectionOf(event.sender.id)?.answerRequest(id, result) ?? false)
   ipcMain.handle(IPC.dismissRequest, (event, id: string) => connectionOf(event.sender.id)?.dropRequest(id))
   ipcMain.handle(IPC.probe, (_event, url: string, headers?: Record<string, string>) => {
@@ -961,7 +999,8 @@ if (!app.requestSingleInstanceLock()) {
     createWindow()
     applyAppIcon(appIconChoice())
     tray.create(appIconChoice())
-    quickAsk.register()
+    quickAsk.register(quickAskAccelerator())
+    tray.setQuickAsk(quickAsk.registered ? quickAsk.accelerator : null)
     startUpdates(state => {
       send(IPC.updateStateChanged, state)
       tray.setUpdate(state.phase === 'ready' ? (state.version ?? null) : null)

@@ -199,6 +199,7 @@ import { isDone, useChatDone } from './state/chatDone'
 import { muteOf, muteOfTarget, turnNotifies, useChatMute, type MuteTarget } from './state/chatMute'
 import { SCALES, applyScale, nextScale, readScale, shortcutFor } from './state/shortcuts'
 import { ShortcutsSheet } from './components/ShortcutsSheet'
+import { QuickAskShortcutSetting } from './components/QuickAskShortcut'
 import { SectionRail } from './components/SectionRail'
 import { fallbackAfterUnpin, pinnedSections, readRailLayout, resolveInitialSection, setSectionPinned, writeRailLayout, type RailLayout, type RailSection } from './state/railSections'
 import { CallTranscriptSheet } from './components/CallTranscriptSheet'
@@ -3473,6 +3474,7 @@ function Settings({
             </Select>
           </dd>
           <SettingsLink label={t('Keyboard')} detail={t('Keyboard Shortcuts')} onOpen={onShortcuts} />
+          <QuickAskShortcutSetting />
           <AppLockSetting />
           <AskDashboardSetting hosts={status.hosts?.length ?? 0} />
           <CombineDashboardsSetting hosts={status.hosts ?? []} />

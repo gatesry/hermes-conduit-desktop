@@ -196,6 +196,11 @@ export type ThemeChoice = 'system' | 'dark' | 'light'
 /** The app icon, as on the phone: dark (the default) or light. */
 export type AppIconChoice = 'dark' | 'light'
 
+export interface QuickAskShortcut {
+  accelerator: string | null
+  registered: boolean
+}
+
 export interface ConduitApi {
   platform: Platform
   /** What the user picked in Settings, and the language that gives. */
@@ -378,8 +383,12 @@ export interface ConduitApi {
   copyText(text: string): void
   /** Hides the quick ask window. */
   hideQuickAsk(): void
-  /** The quick ask shortcut, and whether the system let Conduit have it. */
-  quickAskShortcut(): Promise<{ accelerator: string; registered: boolean }>
+  /** The quick ask shortcut (null when it's off), and whether the system let Conduit have it. */
+  quickAskShortcut(): Promise<QuickAskShortcut>
+  /** Other keys for quick ask, or null for none. `changed` is false when the system refused them (another app has them): the ones before stay. */
+  setQuickAskShortcut(accelerator: string | null): Promise<QuickAskShortcut & { changed: boolean }>
+  /** Settings is listening for quick ask's new keys (true) or stopped: meanwhile the Mac's menu bar and the keys held now stand aside, so any keys can be picked. */
+  setQuickAskRecording(on: boolean): void
   /** How many things wait on the user, for the tray and the Dock's badge. */
   setWaiting(count: number): void
   /** A menu bar command (the Mac's File > New Chat). */
@@ -501,6 +510,8 @@ export const IPC = {
   quickAskShown: 'conduit:quick-ask-shown',
   quickAskExpanded: 'conduit:quick-ask-expanded',
   quickAskShortcut: 'conduit:quick-ask-shortcut',
+  setQuickAskShortcut: 'conduit:set-quick-ask-shortcut',
+  quickAskRecording: 'conduit:quick-ask-recording',
   windowShow: 'conduit:window-show',
   probe: 'conduit:probe',
   signIn: 'conduit:sign-in',
