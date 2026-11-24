@@ -1,5 +1,5 @@
 import { searchFold } from '../state/searchFold'
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { underSource } from '../state/voiceList'
 import { includedInAll, profileGroups, readClosedSections, readGroupByProfile, readLeftOut, shownInAll, writeClosedSections, writeGroupByProfile, writeLeftOut } from '../state/profileGroups'
 import { sectionRows, startOfDay, timeLabel, type ChatRow, type UnreadProfile } from '../state/chats'
@@ -12,7 +12,7 @@ import { UpdatingCapsule } from './UpdatingCapsule'
 import { facetOf, isSourceKey, isStarred, isUnread, parseSelection, selectRows, settingFilter, type ChatFilterKey, type ChatMarks } from '../state/chatMarks'
 import { sourceName, sourcesIn, type ChatSource } from '../state/chatSources'
 import { contentRows, useContentSearch } from '../state/contentSearch'
-import { arrangePinned, edgeScrollStep, moved, usePinnedOrder } from '../state/pinnedOrder'
+import { arrangePinned, edgeScrollDecision, moved, usePinnedOrder } from '../state/pinnedOrder'
 import { gateway } from '../gateway'
 import type { HostBadge, OtherChatRow } from '../state/keptHosts'
 import { HostBadgeMark } from './CombinedDashboards'
@@ -258,6 +258,18 @@ export function ChatList({
   // Mute Notifications' durations, shown in place of the menu.
   const [muting, setMuting] = useState(false)
   useEffect(() => setMuting(false), [menu])
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [menuTop, setMenuTop] = useState<number | null>(null)
+  // The old clamp assumed a fixed menu height; a Move-to-Project or Mute submenu is taller and
+  // its last items fell past the window edge (issue 447). Measure the drawn menu instead.
+  useLayoutEffect(() => {
+    if (!menu) {
+      setMenuTop(null)
+      return
+    }
+    const height = menuRef.current?.offsetHeight ?? 220
+    setMenuTop(Math.max(8, Math.min(menu.y, window.innerHeight - height - 8)))
+  }, [menu, moving, muting])
   async function startMove(row: ChatRow) {
     setMoving(null)
     const targets = await moveTargets!(row).catch(() => [])
@@ -568,11 +580,10 @@ export function ChatList({
     const box = scroller.current
     const state = edge.current
     state.frame = 0
-    // Still for as long as the board allows between dragovers (useBoardScroll's 400 ms).
-    if (!box || performance.now() - state.at > 400) return
+    if (!box) return
     const rect = box.getBoundingClientRect()
-    const step = edgeScrollStep(state.y, rect.top, rect.bottom)
-    // Away from both edges the loop ends, as the board's does: the next dragover starts it again.
+    // The hold and the away-from-both-edges stop are one decision, tested beside edgeScrollStep.
+    const step = edgeScrollDecision(state.y, performance.now(), state.at, rect.top, rect.bottom)
     if (!step) return
     box.scrollTop += step
     state.frame = requestAnimationFrame(edgeScroll)
@@ -960,11 +971,12 @@ export function ChatList({
       <UpdatingCapsule shown={!!updating && sections.length > 0} />
       {menu ? (
         <div
+          ref={menuRef}
           className="host-menu row-menu"
           role="menu"
           style={{
             left: Math.min(menu.x, window.innerWidth - 220),
-            top: Math.max(8, Math.min(menu.y, window.innerHeight - (moving ? 52 + 34 * Math.max(1, moving.length) : 220)))
+            top: menuTop ?? Math.max(8, Math.min(menu.y, window.innerHeight - 220))
           }}
         >
           {isOther(menu.row) ? (
