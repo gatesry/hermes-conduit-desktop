@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { boardFrom, dialable, mailtoLink, people, placeBoards, sameBoards, share, smsLink, textRecipient } from '../src/renderer/src/state/boards'
-import { splitReply } from '../src/renderer/src/state/media'
+import { namingFiles, splitReply, withoutBoardLines } from '../src/renderer/src/state/media'
+import { copyableReply, sameQuotedText } from '../src/renderer/src/state/quote'
 
 const stats = { type: 'stats', title: 'Today', stats: [{ label: 'Steps', value: '8,412' }] }
 const map = { type: 'map', title: 'Route', places: [] }
@@ -85,6 +86,9 @@ describe('boards', () => {
     // The first reply of the turn to name it takes it.
     const twice = placeBoards([user, row, reply('a1', line), reply('a2', `Again ${line}`)])
     expect([...twice.placed.keys()]).toEqual(['a1'])
+    // A steer between the board and the reply is part of the same turn.
+    const steered = placeBoards([user, row, { kind: 'user', key: 'u2', text: 'Shorter', steer: true }, reply('a1', line)])
+    expect([...steered.hidden]).toEqual(['t1'])
   })
 
   it('leaves a board at its row without the line, for a later turn’s line, or for an example', () => {
@@ -107,6 +111,32 @@ describe('boards', () => {
       { kind: 'markdown', text: `more\n${line}` }
     ])
     expect(splitReply(line, boards)).toEqual([{ kind: 'board', id }])
+    // Two boards on one line: the words between them stay between them.
+    const other = 'cb-0123456789ff'
+    expect(splitReply(`A ${line} mid ::conduit-board{id="${other}"} end`, new Set([id, other]))).toEqual([
+      { kind: 'markdown', text: 'A' },
+      { kind: 'board', id },
+      { kind: 'markdown', text: 'mid' },
+      { kind: 'board', id: other },
+      { kind: 'markdown', text: 'end' }
+    ])
+  })
+
+  it('leaves the line out of what is copied, quoted or handed to a live model', () => {
+    expect(withoutBoardLines(`First.\n\n${line}\n\nThen.`)).toBe('First.\n\nThen.')
+    expect(withoutBoardLines(`See ${line} here`)).toBe('See here')
+    expect(withoutBoardLines('```\n' + line + '\n```')).toBe('```\n' + line + '\n```')
+    expect(copyableReply(`First.\n\n${line}\n\nThen.`)).toBe('First.\n\nThen.')
+    expect(namingFiles(`First.\n${line}`)).toBe('First.')
+    // A quote of the reply is found again by the reply's words without the line.
+    const raw = `First.\n\n${line}\n\nThen.`
+    expect(sameQuotedText(withoutBoardLines(raw), withoutBoardLines(raw))).toBe(true)
+    expect(sameQuotedText(raw, withoutBoardLines(raw))).toBe(false)
+    // A line in a quote or a table stays, as the reply draws it.
+    expect(withoutBoardLines(`> ${line}`)).toBe(`> ${line}`)
+    // The first call of a turn to name an id keeps it.
+    const again = { ...row, key: 't2' }
+    expect([...placeBoards([user, row, again, reply('a1', line)]).hidden]).toEqual(['t1'])
     expect(splitReply(`Before\n${line}`)).toEqual([{ kind: 'markdown', text: `Before\n${line}` }])
   })
 
