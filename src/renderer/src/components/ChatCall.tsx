@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { t } from '@shared/i18n'
 import type { PendingRequest } from '@shared/ipc'
 import { VOICE_MODE_EVENT, setVoiceMode, voiceMode, type VoiceMode } from '../state/gptLive'
+import { AFTER_CALL_STALL_MS, afterCallStep, afterFailedSend, chatOfCall, leftByCall, type AfterCall } from '../state/afterCall'
 import { consented, isLive } from '../state/consent'
 import type { CallResume } from '../state/voiceSave'
 import type { CallTranscript } from '../state/voiceCalls'
@@ -170,19 +171,20 @@ export function useChatCall(options: ChatCallOptions): ChatCallState {
     setPictureNote({ id: ++pictureIds.current, kind: picture.kind, change: 'removed', frame: null })
   }
   /** A call's request to Hermes: the waiting picture goes with it, once. */
-  const callSay = (words: string) => {
+  const sayToChat = async (words: string): Promise<boolean> => {
     const picture = waitingPicture.current
     if (picture) {
       waitingPicture.current = null
       setCallPicture(null)
     }
     const send = late.current?.onSend
-    if (!send) return
-    void send(words, picture ? [picture.attachment] : [], { takeOver: true, spoken: true }).then(sent => {
-      // The chat didn't open, or was left while it opened: the call says the words didn't go.
-      if (sent === false) tell(t('That didn’t reach the chat. Try again.'))
-    })
+    if (!send) return false
+    const sent = await send(words, picture ? [picture.attachment] : [], { takeOver: true, spoken: true }).catch(() => false as const)
+    // The chat didn't open, or was left while it opened: the call says the words didn't go.
+    if (sent === false) tell(t('That didn’t reach the chat. Try again.'))
+    return sent !== false
   }
+  const callSay = (words: string) => void sayToChat(words)
   const pictureControls = (
     <CallPictureControls
       waiting={callPicture}
@@ -217,6 +219,31 @@ export function useChatCall(options: ChatCallOptions): ChatCallState {
   const items = useTranscriptValue(store, state => (calling ? state.items : null)) ?? NO_ITEMS
   const lastReply = useTranscriptValue(store, state => (calling ? lastReplyOf(state.items) : null))
 
+  // What a live call left unsent at hang-up goes once the chat is free (hermes-conduit issue 3185).
+  const [left, setLeft] = useState<AfterCall | null>(null)
+  // A call hands them over as it unmounts, with the callback it was first drawn with, so its chat is
+  // kept here: the one it started in (with the id a new chat got from it), not the chat whose opening
+  // ended the call.
+  const callChat = useRef({ chatId, calling: false })
+  callChat.current = { chatId: chatOfCall(callChat.current.chatId, callChat.current.calling, calling, chatId), calling }
+  const callLeft = (requests: string[]) => setLeft(kept => leftByCall(kept, callChat.current.chatId, requests))
+  // Drawn again once a send no reply followed has been waited on long enough.
+  const [stallTick, setStallTick] = useState(0)
+  useEffect(() => {
+    const step = afterCallStep(left, { chatId, calling, running, turnsDone, at: Date.now() })
+    if (step.left !== left) setLeft(step.left)
+    if (step.send === undefined) {
+      if (!step.left || step.left.sentWhen === null || calling || running) return
+      const timer = window.setTimeout(() => setStallTick(tick => tick + 1), Math.max(0, step.left.sentWhen + AFTER_CALL_STALL_MS - Date.now()) + 50)
+      return () => window.clearTimeout(timer)
+    }
+    // One the chat didn't take: the rest would wait on a reply that never comes, so they go with it.
+    const sentFrom = step.left
+    void sayToChat(step.send).then(sent => {
+      if (!sent) setLeft(now => afterFailedSend(now, sentFrom))
+    })
+  }, [left, chatId, calling, running, turnsDone, stallTick])
+
   const end = () => setCalling(false)
   const view = (drawn: ChatCallView): ReactNode => {
     late.current = drawn
@@ -233,6 +260,7 @@ export function useChatCall(options: ChatCallOptions): ChatCallState {
       turnsDone,
       lastReply,
       onEnd: end,
+      onLeft: callLeft,
       onClassic: () => setCallMode('classic'),
       requests,
       resume: resume ?? undefined
