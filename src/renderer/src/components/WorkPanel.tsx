@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { t } from '@shared/i18n'
 import { gateway } from '../gateway'
 import {
@@ -53,26 +53,38 @@ interface Props {
 }
 
 type WorkCardAction = WorkAction | WorkManage | 'approve' | 'deny'
+const nativeMenuTarget = 'input, textarea, a[href]'
 
 function WorkCard({
   item,
+  movingFocus,
   botName,
   busy,
   problem,
   onAct,
+  onCopyBranch,
   onOpenChat,
   onOpenMenu
 }: {
   item: WorkItem
+  movingFocus: RefObject<string | null>
   botName: string
   busy: boolean
   problem: string | null
   onAct: (ref: string, action: WorkCardAction, body?: Record<string, unknown>) => Promise<boolean>
+  onCopyBranch: (item: WorkItem) => Promise<void>
   onOpenChat: (item: WorkItem) => void
   onOpenMenu: (item: WorkItem, x: number, y: number, opener: HTMLElement | null) => void
 }) {
   const [expanded, setExpanded] = useState(needsYou(item))
   const [reply, setReply] = useState('')
+  const cardRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const card = cardRef.current
+    return () => {
+      if (card?.contains(document.activeElement)) movingFocus.current = item.ref
+    }
+  }, [item.ref, movingFocus])
   const now = doing(item)
 
   const act = async (action: WorkCardAction, body: Record<string, unknown> = {}) => {
@@ -92,6 +104,7 @@ function WorkCard({
 
   return (
     <div
+      ref={cardRef}
       className={`work-card tone-${tone}`}
       onContextMenu={e => {
         if (!hasMenu) return
@@ -101,7 +114,7 @@ function WorkCard({
           !!sel?.toString().trim() &&
           ((!!sel.anchorNode && e.currentTarget.contains(sel.anchorNode)) ||
             (!!sel.focusNode && e.currentTarget.contains(sel.focusNode)))
-        if (target.closest('input, textarea') || selectedHere) return
+        if (target.closest(nativeMenuTarget) || selectedHere) return
         e.preventDefault()
         e.stopPropagation()
         const opener = target.closest('button') ?? e.currentTarget.querySelector('button')
@@ -114,7 +127,7 @@ function WorkCard({
         if (!hasMenu) return
         if (e.key !== 'ContextMenu' && !(e.shiftKey && e.key === 'F10')) return
         const target = e.target as Element
-        if (target.closest('input, textarea')) return
+        if (target.closest(nativeMenuTarget)) return
         e.preventDefault()
         e.stopPropagation()
         const opener = target.closest('button') ?? e.currentTarget.querySelector('button')
@@ -128,6 +141,7 @@ function WorkCard({
         </span>
         <button
           className="work-card-head"
+          data-work-ref={item.ref}
           aria-expanded={opensChat ? undefined : expanded}
           title={opensChat ? t('Open {ref}’s chat', { ref: item.ref }) : undefined}
           onClick={() => (opensChat ? onOpenChat(item) : setExpanded(!expanded))}
@@ -205,7 +219,7 @@ function WorkCard({
           {item.branch ? (
             <div className="meta work-branch">
               {t('Branch {name}', { name: item.branch })}{' '}
-              <button className="link" onClick={() => void navigator.clipboard.writeText(item.branch)}>
+              <button className="link" onClick={() => void onCopyBranch(item)}>
                 {t('Copy Branch')}
               </button>
             </div>
@@ -265,7 +279,7 @@ function WorkCard({
           ) : null}
         </div>
       ) : null}
-      {problem ? <div className="error-text">{problem}</div> : null}
+      {problem ? <div className="error-text" role="alert">{problem}</div> : null}
     </div>
   )
 }
@@ -399,6 +413,17 @@ export function WorkPanel({ profile, botName, snapshot, error, onReload, onAnswe
   const [allRecent, setAllRecent] = useState(false)
   const [resolved, setResolved] = useState<WorkItem[] | null>(null)
   const [resolvedError, setResolvedError] = useState<string | null>(null)
+  const panelRef = useRef<HTMLElement>(null)
+  const movingFocus = useRef<string | null>(null)
+  // Pinning moves the focused card between sections, replacing its DOM button.
+  useLayoutEffect(() => {
+    const ref = movingFocus.current
+    movingFocus.current = null
+    if (ref && document.activeElement === document.body) {
+      Array.from(panelRef.current?.querySelectorAll<HTMLButtonElement>('.work-card-head') ?? [])
+        .find(button => button.dataset.workRef === ref)?.focus({ preventScroll: true })
+    }
+  })
   const [busyByRef, setBusyByRef] = useState<Record<string, boolean>>({})
   const [problemByRef, setProblemByRef] = useState<Record<string, string>>({})
   const busyRefs = useRef(new Set<string>())
@@ -424,16 +449,29 @@ export function WorkPanel({ profile, botName, snapshot, error, onReload, onAnswe
     if (resolved) void showResolved()
   }
 
-  const act = async (ref: string, action: WorkCardAction, body: Record<string, unknown> = {}): Promise<boolean> => {
-    if (busyRefs.current.has(ref)) return false
-    busyRefs.current.add(ref)
-    setBusyByRef(current => ({ ...current, [ref]: true }))
+  const clearProblem = (ref: string) => {
     setProblemByRef(current => {
       if (!(ref in current)) return current
       const next = { ...current }
       delete next[ref]
       return next
     })
+  }
+
+  const copyBranch = async (item: WorkItem) => {
+    clearProblem(item.ref)
+    try {
+      await navigator.clipboard.writeText(item.branch)
+    } catch (e) {
+      setProblemByRef(current => ({ ...current, [item.ref]: workRefusal(e) }))
+    }
+  }
+
+  const act = async (ref: string, action: WorkCardAction, body: Record<string, unknown> = {}): Promise<boolean> => {
+    if (busyRefs.current.has(ref)) return false
+    busyRefs.current.add(ref)
+    setBusyByRef(current => ({ ...current, [ref]: true }))
+    clearProblem(ref)
     try {
       await gateway.http('POST', workPath(`${WORK}/${encodeURIComponent(ref)}/${action}`, profile), body)
       changed()
@@ -452,7 +490,9 @@ export function WorkPanel({ profile, botName, snapshot, error, onReload, onAnswe
     }
   }
 
-  const visibleItems = resolved ?? snapshot?.items ?? []
+  const lists = snapshot ? sections(snapshot.items) : null
+  const recent = lists ? (allRecent ? lists.recent : lists.recent.slice(0, 3)) : []
+  const visibleItems = resolved ?? (menu && lists ? [...lists.pinned, ...lists.active, ...recent] : [])
   const menuItem = menu ? (visibleItems.find(item => item.ref === menu.ref) ?? null) : null
   const menuEntries = menuItem ? workMenuItems(menuItem, botName) : []
 
@@ -510,19 +550,19 @@ export function WorkPanel({ profile, botName, snapshot, error, onReload, onAnswe
     <WorkCard
       key={item.ref}
       item={item}
+      movingFocus={movingFocus}
       botName={botName}
       busy={!!busyByRef[item.ref]}
       problem={problemByRef[item.ref] ?? null}
       onAct={act}
+      onCopyBranch={copyBranch}
       onOpenChat={onOpenChat}
       onOpenMenu={openMenu}
     />
   )
-  const lists = snapshot ? sections(snapshot.items) : null
-  const recent = lists ? (allRecent ? lists.recent : lists.recent.slice(0, 3)) : []
 
   return (
-    <aside className="ws-panel work-panel" aria-label={t('{bot}’s work', { bot: botName })}>
+    <aside ref={panelRef} className="ws-panel work-panel" aria-label={t('{bot}’s work', { bot: botName })}>
       {tabs}
       <div className="ws-head">
         {resolved ? (
@@ -678,13 +718,13 @@ export function WorkPanel({ profile, botName, snapshot, error, onReload, onAnswe
                 title={hint}
                 disabled={disabled}
                 onClick={() => {
-                  setMenu(null)
+                  closeMenu(entry.kind !== 'open')
                   if (entry.kind === 'manage' || entry.kind === 'action') {
                     void act(menuItem.ref, entry.action)
                   } else if (entry.kind === 'open') {
                     onOpenChat(menuItem)
                   } else {
-                    void navigator.clipboard.writeText(entry.branch)
+                    void copyBranch(menuItem)
                   }
                 }}
               >

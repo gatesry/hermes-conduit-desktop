@@ -120,6 +120,55 @@ const menuButton = (label: string) =>
   [...host.querySelectorAll<HTMLButtonElement>('[role="menu"] button[role="menuitem"]')].find(b => b.textContent === label)!
 
 describe('WorkPanel right-click context menu', () => {
+  it('closes the menu when a refresh folds its card out of Recent', async () => {
+    await renderPanel()
+    rightClick(cardByRef('A94'))
+    expect(menuLabels()).toContain('Resolve')
+    const row = snapshot.items.find(i => i.ref === 'A94')!
+    await renderPanel({ snapshot: { ...snapshot, items: [...['A1', 'A2', 'A3'].map(ref => ({ ...row, ref })), row] } })
+    expect([...host.querySelectorAll('.work-ref')].map(el => el.textContent)).not.toContain('A94')
+    expect(host.querySelector('[role="menu"]')).toBeNull()
+  })
+
+  it('leaves report links to the native link menu', async () => {
+    await renderPanel({ snapshot: { ...snapshot, items: snapshot.items.map(i => ({ ...i, result: '[Report](https://example.org/report)' })) } })
+    const card = cardByRef('A94')
+    act(() => card.querySelector<HTMLButtonElement>('.work-card-head')!.click())
+    const link = card.querySelector<HTMLAnchorElement>('a[href]')!
+    expect(rightClick(link).defaultPrevented).toBe(false)
+    const key = new KeyboardEvent('keydown', { key: 'F10', shiftKey: true, bubbles: true, cancelable: true })
+    act(() => { link.dispatchEvent(key) })
+    expect(key.defaultPrevented).toBe(false)
+    expect(host.querySelector('[role="menu"]')).toBeNull()
+  })
+
+  it('restores focus to the card after choosing a task action', async () => {
+    await renderPanel()
+    const head = cardByRef('A94').querySelector<HTMLButtonElement>('.work-card-head')!
+    head.focus()
+    rightClick(head)
+    expect(document.activeElement).toBe(menuButton('Pin'))
+    await act(async () => { menuButton('Pin').click() })
+    expect(document.activeElement).toBe(head)
+    await renderPanel({ snapshot: { ...snapshot, items: snapshot.items.map(i => i.ref === 'A94' ? { ...i, pinned: true } : i) } })
+    expect(document.activeElement).toBe(cardByRef('A94').querySelector('.work-card-head'))
+  })
+
+  it.each(['menu', 'expanded'])('shows a clipboard failure on the card from the %s control', async source => {
+    const write = vi.fn().mockImplementation(() => { throw new Error('Clipboard unavailable') })
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: write }, configurable: true })
+    await renderPanel()
+    const card = cardByRef('W37')
+    if (source === 'menu') {
+      rightClick(card)
+      await act(async () => { menuButton('Copy Branch').click() })
+    } else {
+      act(() => card.querySelector<HTMLButtonElement>('.work-card-more')!.click())
+      await act(async () => { card.querySelector<HTMLButtonElement>('.work-branch button')!.click() })
+    }
+    expect(card.querySelector('[role="alert"]')?.textContent).toContain('Clipboard unavailable')
+  })
+
   it('opens manage actions for an ask card and resolves it', async () => {
     const props = await renderPanel()
     const ev = rightClick(cardByRef('A94'))
