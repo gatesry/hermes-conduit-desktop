@@ -136,4 +136,56 @@ describe("the user's own words with a live call's request (hermes-conduit issue 
     ask.heard('And a cab')
     expect(await ask.ask('ask_thread', 'Order a cab.')).toEqual({ request: 'Order a cab.' + MARKER + 'And a cab' })
   })
+
+  it('keeps a yes when the model speaks before the rest of the answer arrives', async () => {
+    let t = 1_000_000
+    const ask = new AskFirst(true, () => t, 0, 600)
+    ask.heard('Book a table')
+    await ask.ask('ask_thread', 'Book a table for two.')
+    ask.modelSpoke()
+    t += 3000
+    ask.heard('Yes')
+    setTimeout(() => {
+      ask.modelSpoke()
+      ask.heard('and order a cab for eight')
+    }, 100)
+    expect(await ask.release()).toEqual({ send: true, tool: 'ask_thread', request: 'Book a table for two.' })
+    // Their next line is the next request's.
+    ask.set(false)
+    expect(await ask.ask('ask_thread', 'Order a cab.')).toEqual({ request: 'Order a cab.' + MARKER + 'and order a cab for eight' })
+  })
+
+  it('reads the rest of a yes that arrives after the model already spoke before the answer was read', async () => {
+    let t = 1_000_000
+    const ask = new AskFirst(true, () => t, 0, 600)
+    ask.heard('Book a table')
+    await ask.ask('ask_thread', 'Book a table for two.')
+    ask.modelSpoke()
+    t += 3000
+    ask.heard('Yes', true)
+    setTimeout(() => ask.heard('Yes make it for four', true), 100)
+    const sent = await ask.release()
+    expect('request' in sent && sent.request).toContain('the user said: "Yes make it for four"')
+  })
+
+  it('takes the same line said again after the model spoke as a new one', async () => {
+    const words = new RequestWords()
+    words.heard('Do it', true)
+    expect(await words.take(0)).toEqual(['Do it'])
+    words.modelSpoke()
+    words.heard('Do it', true)
+    expect(words.pending()).toEqual(['Do it'])
+  })
+
+  it('reads a yes taken back in the same breath as a no', async () => {
+    let t = 1_000_000
+    const ask = new AskFirst(true, () => t, 0, 600)
+    ask.heard('Book a table', true)
+    await ask.ask('ask_thread', 'Book a table for two.')
+    ask.modelSpoke()
+    t += 3000
+    ask.heard('Yes', true)
+    setTimeout(() => ask.heard('actually no', true), 100)
+    expect((await ask.release()).send).toBe(false)
+  })
 })

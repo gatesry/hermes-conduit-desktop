@@ -75,7 +75,7 @@ export class RequestWords {
     if (whole) {
       // The same line grown, or another one: a line that doesn't continue the last is new.
       // A line still growing when the model spoke goes on as the same line.
-      const grown = this.line !== '' && text.startsWith(this.line)
+      const grown = this.line !== '' && text.startsWith(this.line) && (this.open || text.length > this.line.length)
       if (!grown && !(this.open && this.line.startsWith(text))) this.close()
       this.line = text
       this.taken = Math.min(this.taken, text.length)
@@ -105,9 +105,10 @@ export class RequestWords {
   }
 
   /** All of it went with a request, or was the user's answer about one. */
-  skip(): void {
+  skip(keepLine = false): void {
     this.done = []
-    this.taken = this.line.length
+    // `keepLine`: the line being said began after the answer and is the next request's.
+    if (!keepLine) this.taken = this.line.length
   }
 
   /** What the user said for the request being made, given `waitMs` to arrive and to stop growing. */

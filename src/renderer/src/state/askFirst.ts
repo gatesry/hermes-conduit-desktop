@@ -154,6 +154,11 @@ export class AskFirst {
   private lineOpen = false
   /** What the user said that no request carried yet. */
   private readonly words: RequestWords
+  /** How often the model spoke, and the count when the user's line was last written: a yes being read tells their next line from the same one revised. */
+  private modelTurns = 0
+  private lineTurns = 0
+  /** The yes just read was followed by the user's next line, which is the next request's. */
+  private nextLineBegan = false
 
   constructor(
     on: boolean,
@@ -174,6 +179,7 @@ export class AskFirst {
     this.lineOpen = true
     this.line += text
     this.lineAt = this.now()
+    this.lineTurns = this.modelTurns
     this.words.heard(text, whole)
     if (this.on && saysSendToHermes(this.line, whole)) this.sendNowAt = this.now()
   }
@@ -181,6 +187,7 @@ export class AskFirst {
   /** The model spoke: the user's next words start a new line. */
   modelSpoke(): void {
     this.lineOpen = false
+    this.modelTurns += 1
     this.words.modelSpoke()
   }
 
@@ -253,7 +260,7 @@ export class AskFirst {
       case 'yes':
         this.draft = null
         // Their yes, and anything said while it waited, was this request's: none of it goes with the next one.
-        this.words.skip()
+        this.words.skip(this.nextLineBegan)
         return { send: true, tool: waiting.tool, request: withUserWords(waiting.said, adding(answer.addition, waiting.request)) }
       case 'no':
       case 'notYet':
@@ -295,10 +302,19 @@ export class AskFirst {
   /** A yes whose line is still arriving ("Yes", then "make it for four"): read once it stops growing, so the rest goes with this request and not the next. */
   private async wholeAnswer(first: HeldAnswer): Promise<HeldAnswer> {
     let answer = first
+    this.nextLineBegan = false
+    // Words written before the model spoke again are the same answer, revised
+    // or grown; words written after it are their next line, left for the
+    // next request, and the yes already read stands.
+    const readTurns = this.lineTurns
     for (let waited = 0; waited < this.wordsWaitMs; waited += 250) {
       const line = this.line
       await new Promise(resolve => setTimeout(resolve, 250))
       if (this.line === line) break
+      if (this.lineTurns !== readTurns) {
+        this.nextLineBegan = true
+        break
+      }
       answer = heldRequestAnswer(this.line)
     }
     return answer
