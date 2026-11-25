@@ -403,6 +403,9 @@ export function useChat(storedId: string | null, profile: string | undefined, se
   )
   useEffect(() => () => cancelFrame(), [])
   const [chat, setChat] = useState<OpenChat>({ storedId, liveId: null })
+  // Wherever a resume or a new chat lands the live session (an open, a re-read, a reaped runtime's resume, a first
+  // send), a question dismissed beside another chat finds its card by it (expiredQuestions).
+  useEffect(() => noteChatSession(chat.storedId, chat.liveId), [chat.storedId, chat.liveId])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const liveId = useRef<string | null>(null)
@@ -535,6 +538,10 @@ export function useChat(storedId: string | null, profile: string | undefined, se
         const { result, rows } = open
         liveId.current = result.session_id
         noteChatSession(result.stored_session_id ?? storedId, result.session_id)
+        // A turn already running was joined partway: a step that began before this resume has no start
+        // here, so its row never draws from the events (the Asuka check, 2026-11-24: a step row missing
+        // after a mid-reply reconnect until the chat was opened again). The chat is read once the turn ends.
+        if (result.running === true) gapPending.current = true
         setChat({
           storedId: result.stored_session_id ?? storedId,
           liveId: result.session_id,
@@ -713,6 +720,8 @@ export function useChat(storedId: string | null, profile: string | undefined, se
       state = withInflight(state, result)
       state = withPendingConnection(state, result)
       dispatch({ type: 'reset', state })
+      // Joined partway through a running turn, as an open is: read again once it ends.
+      if (result.running === true) gapPending.current = true
       drawnTip.current = tipOf(rows ?? result.messages)
       followedLive.current = result.running === true
       setQueue(queueFrom(result.pending) ?? [])
@@ -795,6 +804,8 @@ export function useChat(storedId: string | null, profile: string | undefined, se
     }
     const off = window.conduit.onEvent(event => {
       if (event.type === 'sessions.changed') soon(CATCH_UP_SETTLE_MS)
+      // A turn joined partway, or one that lost events, ended: the read it waited for.
+      else if (event.type === 'message.complete' && gapPending.current && event.session_id === liveId.current) soon(CATCH_UP_SETTLE_MS)
       // The events between two sockets couldn't be replayed: the chat as Hermes has it now.
       // A message on its way or waiting in the queue's dock isn't in what Hermes stored yet, and a reload
       // would drop it: the store's next move reads the chat in once it is.
