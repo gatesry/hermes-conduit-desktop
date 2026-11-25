@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { t } from '@shared/i18n'
 import { gateway } from '../gateway'
 import {
@@ -14,6 +14,7 @@ import {
   handOverCaption,
   manageTitle,
   needsYou,
+  workMenuItems,
   workTone,
   parseWork,
   sections,
@@ -32,6 +33,7 @@ import { Markdown } from './Markdown'
 import { Icon } from './icons'
 import { timeLabel } from '../state/chats'
 import { askedInOf, dropExpiredAsking, type AskedIn, type OpenChat } from '../state/expiredQuestions'
+import { useFittedMenu } from '../state/menuFit'
 import type { WaitingRow } from '../state/needsYou'
 
 interface Props {
@@ -50,41 +52,37 @@ interface Props {
   openChat?: OpenChat
 }
 
+type WorkCardAction = WorkAction | WorkManage | 'approve' | 'deny'
+
 function WorkCard({
   item,
-  profile,
   botName,
-  onChanged,
-  onOpenChat
+  busy,
+  problem,
+  onAct,
+  onOpenChat,
+  onOpenMenu
 }: {
   item: WorkItem
-  profile?: string
   botName: string
-  onChanged: () => void
+  busy: boolean
+  problem: string | null
+  onAct: (ref: string, action: WorkCardAction, body?: Record<string, unknown>) => Promise<boolean>
   onOpenChat: (item: WorkItem) => void
+  onOpenMenu: (item: WorkItem, x: number, y: number, opener: HTMLElement | null) => void
 }) {
   const [expanded, setExpanded] = useState(needsYou(item))
   const [reply, setReply] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [problem, setProblem] = useState<string | null>(null)
   const now = doing(item)
 
-  const act = async (action: WorkAction | WorkManage | 'approve' | 'deny', body: Record<string, unknown> = {}) => {
-    setBusy(true)
-    setProblem(null)
-    try {
-      await gateway.http('POST', workPath(`${WORK}/${encodeURIComponent(item.ref)}/${action}`, profile), body)
-      if (action === 'send') setReply('')
-      onChanged()
-    } catch (e) {
-      setProblem(workRefusal(e))
-    } finally {
-      setBusy(false)
-    }
+  const act = async (action: WorkCardAction, body: Record<string, unknown> = {}) => {
+    const ok = await onAct(item.ref, action, body)
+    if (ok && action === 'send') setReply('')
   }
 
   // A workstream with a chat opens it on one click (Eric 2026-11-21); the chevron opens the card in place.
   const opensChat = item.kind === 'workstream' && !!item.sessionId
+  const hasMenu = workMenuItems(item, botName).length > 0
   const handOver = item.manage.find(manage => manage === 'leave_alone' || manage === 'coordinate')
   const rowManage = item.manage.filter(manage => manage !== handOver)
   const tone = workTone(item)
@@ -93,7 +91,37 @@ function WorkCard({
     tone === 'needs' ? 'bell' : tone === 'working' ? 'spinner' : tone === 'failed' ? 'close' : !item.closed && item.status === 'stopped' ? 'stop' : 'check'
 
   return (
-    <div className={`work-card tone-${tone}`}>
+    <div
+      className={`work-card tone-${tone}`}
+      onContextMenu={e => {
+        if (!hasMenu) return
+        const target = e.target as Element
+        const sel = window.getSelection()
+        const selectedHere =
+          !!sel?.toString().trim() &&
+          ((!!sel.anchorNode && e.currentTarget.contains(sel.anchorNode)) ||
+            (!!sel.focusNode && e.currentTarget.contains(sel.focusNode)))
+        if (target.closest('input, textarea') || selectedHere) return
+        e.preventDefault()
+        e.stopPropagation()
+        const opener = target.closest('button') ?? e.currentTarget.querySelector('button')
+        const box = (opener ?? e.currentTarget).getBoundingClientRect()
+        const x = e.clientX || e.clientY ? e.clientX : Math.round(box.left + 12)
+        const y = e.clientX || e.clientY ? e.clientY : Math.round(box.bottom)
+        onOpenMenu(item, x, y, opener)
+      }}
+      onKeyDown={e => {
+        if (!hasMenu) return
+        if (e.key !== 'ContextMenu' && !(e.shiftKey && e.key === 'F10')) return
+        const target = e.target as Element
+        if (target.closest('input, textarea')) return
+        e.preventDefault()
+        e.stopPropagation()
+        const opener = target.closest('button') ?? e.currentTarget.querySelector('button')
+        const box = (opener ?? e.currentTarget).getBoundingClientRect()
+        onOpenMenu(item, Math.round(box.left + 12), Math.round(box.bottom), opener)
+      }}
+    >
       <div className="work-card-top">
         <span className={`status-mark tone-${tone}`} aria-hidden="true">
           <Icon name={mark} />
@@ -371,8 +399,17 @@ export function WorkPanel({ profile, botName, snapshot, error, onReload, onAnswe
   const [allRecent, setAllRecent] = useState(false)
   const [resolved, setResolved] = useState<WorkItem[] | null>(null)
   const [resolvedError, setResolvedError] = useState<string | null>(null)
+  const [busyByRef, setBusyByRef] = useState<Record<string, boolean>>({})
+  const [problemByRef, setProblemByRef] = useState<Record<string, string>>({})
+  const busyRefs = useRef(new Set<string>())
+  const [menu, setMenu] = useState<{ ref: string; x: number; y: number } | null>(null)
+  const menuFit = useFittedMenu<HTMLDivElement>(menu)
+  const openerRef = useRef<HTMLElement | null>(null)
+  const restoreFocusRef = useRef(false)
+  const focusedMenuRef = useRef<{ ref: string; x: number; y: number } | null>(null)
 
   const showResolved = async () => {
+    setMenu(null)
     setResolvedError(null)
     try {
       const answer = (await gateway.http('GET', workPath(`${WORK}?resolved=1`, profile))) as { work?: unknown }
@@ -387,7 +424,100 @@ export function WorkPanel({ profile, botName, snapshot, error, onReload, onAnswe
     if (resolved) void showResolved()
   }
 
-  const card = (item: WorkItem) => <WorkCard key={item.ref} item={item} profile={profile} botName={botName} onChanged={changed} onOpenChat={onOpenChat} />
+  const act = async (ref: string, action: WorkCardAction, body: Record<string, unknown> = {}): Promise<boolean> => {
+    if (busyRefs.current.has(ref)) return false
+    busyRefs.current.add(ref)
+    setBusyByRef(current => ({ ...current, [ref]: true }))
+    setProblemByRef(current => {
+      if (!(ref in current)) return current
+      const next = { ...current }
+      delete next[ref]
+      return next
+    })
+    try {
+      await gateway.http('POST', workPath(`${WORK}/${encodeURIComponent(ref)}/${action}`, profile), body)
+      changed()
+      return true
+    } catch (e) {
+      setProblemByRef(current => ({ ...current, [ref]: workRefusal(e) }))
+      return false
+    } finally {
+      busyRefs.current.delete(ref)
+      setBusyByRef(current => {
+        if (!(ref in current)) return current
+        const next = { ...current }
+        delete next[ref]
+        return next
+      })
+    }
+  }
+
+  const visibleItems = resolved ?? snapshot?.items ?? []
+  const menuItem = menu ? (visibleItems.find(item => item.ref === menu.ref) ?? null) : null
+  const menuEntries = menuItem ? workMenuItems(menuItem, botName) : []
+
+  const closeMenu = (restoreFocus = false) => {
+    restoreFocusRef.current = restoreFocus
+    setMenu(null)
+  }
+
+  useEffect(() => {
+    if (menu && menuEntries.length === 0) setMenu(null)
+  }, [menu, menuEntries.length])
+
+  useEffect(() => {
+    if (!menu) {
+      focusedMenuRef.current = null
+      if (restoreFocusRef.current) {
+        restoreFocusRef.current = false
+        if (openerRef.current?.isConnected) openerRef.current.focus()
+      }
+      return
+    }
+    const close = () => setMenu(null)
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        closeMenu(true)
+      }
+    }
+    window.addEventListener('click', close)
+    window.addEventListener('contextmenu', close)
+    window.addEventListener('blur', close)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('click', close)
+      window.removeEventListener('contextmenu', close)
+      window.removeEventListener('blur', close)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [menu])
+
+  const menuReady = !!menu && menuEntries.length > 0 && menuFit.style?.visibility !== 'hidden'
+  useEffect(() => {
+    if (!menuReady || !menu || focusedMenuRef.current === menu) return
+    focusedMenuRef.current = menu
+    menuFit.ref.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus()
+  }, [menuReady, menu, menuFit.ref])
+
+  const openMenu = (item: WorkItem, x: number, y: number, opener: HTMLElement | null) => {
+    openerRef.current = opener
+    restoreFocusRef.current = false
+    setMenu({ ref: item.ref, x, y })
+  }
+
+  const card = (item: WorkItem) => (
+    <WorkCard
+      key={item.ref}
+      item={item}
+      botName={botName}
+      busy={!!busyByRef[item.ref]}
+      problem={problemByRef[item.ref] ?? null}
+      onAct={act}
+      onOpenChat={onOpenChat}
+      onOpenMenu={openMenu}
+    />
+  )
   const lists = snapshot ? sections(snapshot.items) : null
   const recent = lists ? (allRecent ? lists.recent : lists.recent.slice(0, 3)) : []
 
@@ -396,7 +526,15 @@ export function WorkPanel({ profile, botName, snapshot, error, onReload, onAnswe
       {tabs}
       <div className="ws-head">
         {resolved ? (
-          <button className="staged-remove" aria-label={t('Back')} title={t('Back')} onClick={() => setResolved(null)}>
+          <button
+            className="staged-remove"
+            aria-label={t('Back')}
+            title={t('Back')}
+            onClick={() => {
+              setMenu(null)
+              setResolved(null)
+            }}
+          >
             <Icon name="back" />
           </button>
         ) : null}
@@ -409,7 +547,7 @@ export function WorkPanel({ profile, botName, snapshot, error, onReload, onAnswe
           <Icon name="close" />
         </button>
       </div>
-      <div className="work-body">
+      <div className="work-body" onScroll={() => (menu ? setMenu(null) : undefined)}>
         {resolved ? (
           <>
             {resolvedError ? <p className="error-text">{resolvedError}</p> : null}
@@ -497,6 +635,65 @@ export function WorkPanel({ profile, botName, snapshot, error, onReload, onAnswe
           </>
         )}
       </div>
+      {menu && menuItem && menuEntries.length ? (
+        <div
+          ref={menuFit.ref}
+          className="host-menu row-menu"
+          role="menu"
+          aria-label={menuItem.ref}
+          style={menuFit.style}
+          onMouseDown={e => e.stopPropagation()}
+          onContextMenu={e => e.preventDefault()}
+          onBlur={e => {
+            if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget)) setMenu(null)
+          }}
+          onKeyDown={e => {
+            if (e.key === 'Escape') {
+              e.preventDefault()
+              e.stopPropagation()
+              closeMenu(true)
+              return
+            }
+            if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return
+            e.preventDefault()
+            e.stopPropagation()
+            const items = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'))
+            if (!items.length) return
+            const index = items.indexOf(document.activeElement as HTMLButtonElement)
+            const next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 : index + (e.key === 'ArrowDown' ? 1 : -1)
+            items[(next + items.length) % items.length]?.focus()
+          }}
+        >
+          {menuEntries.map(entry => {
+            const key = entry.kind === 'manage' || entry.kind === 'action' ? `${entry.kind}:${entry.action}` : entry.kind
+            const disabled = (entry.kind === 'manage' || entry.kind === 'action') && !!busyByRef[menuItem.ref]
+            const hint =
+              entry.kind === 'manage' && (entry.action === 'leave_alone' || entry.action === 'coordinate')
+                ? handOverCaption(entry.action, botName)
+                : undefined
+            return (
+              <button
+                key={key}
+                role="menuitem"
+                title={hint}
+                disabled={disabled}
+                onClick={() => {
+                  setMenu(null)
+                  if (entry.kind === 'manage' || entry.kind === 'action') {
+                    void act(menuItem.ref, entry.action)
+                  } else if (entry.kind === 'open') {
+                    onOpenChat(menuItem)
+                  } else {
+                    void navigator.clipboard.writeText(entry.branch)
+                  }
+                }}
+              >
+                {entry.label}
+              </button>
+            )
+          })}
+        </div>
+      ) : null}
     </aside>
   )
 }
